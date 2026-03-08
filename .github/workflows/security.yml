@@ -1,0 +1,109 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Run weekly on Monday at 06:00 UTC
+    - cron: "0 6 * * 1"
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Secret scanning
+  # ---------------------------------------------------------------------------
+  gitleaks:
+    name: "Secret scanning (gitleaks)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          GITLEAKS_VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/')
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar xz
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Run gitleaks
+        run: gitleaks detect --source . --verbose
+
+  # ---------------------------------------------------------------------------
+  # Python dependency audit
+  # ---------------------------------------------------------------------------
+  python-audit:
+    name: "Python — dependency audit"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [services/chat-api, services/chat-worker]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv + dependencies
+        working-directory: ${{ matrix.service }}
+        run: |
+          pip install uv pip-audit
+          uv sync
+
+      - name: Audit
+        working-directory: ${{ matrix.service }}
+        run: pip-audit -r <(uv pip freeze) || true
+
+  # ---------------------------------------------------------------------------
+  # Node.js dependency audit
+  # ---------------------------------------------------------------------------
+  node-audit:
+    name: "Web — npm audit"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Audit
+        working-directory: apps/web
+        run: npm audit --omit=dev || true
+
+  # ---------------------------------------------------------------------------
+  # Container scanning (Trivy)
+  # ---------------------------------------------------------------------------
+  container-scan:
+    name: "Container scan (Trivy)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build images
+        run: |
+          docker build -t chat-api:scan services/chat-api
+          docker build -t chat-worker:scan services/chat-worker
+
+      - name: Scan chat-api
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "chat-api:scan"
+          severity: "HIGH,CRITICAL"
+          exit-code: "0"
+
+      - name: Scan chat-worker
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "chat-worker:scan"
+          severity: "HIGH,CRITICAL"
+          exit-code: "0"

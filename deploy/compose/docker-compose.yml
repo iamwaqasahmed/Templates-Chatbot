@@ -1,0 +1,67 @@
+# =============================================================================
+# Local Development — Docker Compose
+# =============================================================================
+# Start: make up    (or: cd deploy/compose && docker compose up -d --build)
+# Stop:  make down
+
+services:
+  # --- Infrastructure dependencies ---
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  dynamodb:
+    image: amazon/dynamodb-local:latest
+    ports:
+      - "8000:8000"
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+
+  # --- Application services ---
+
+  chat-api:
+    build:
+      context: ../../services/chat-api
+    environment:
+      - APP_ENV=local
+      - LOG_LEVEL=DEBUG
+      - REDIS_URL=redis://redis:6379/0
+      - DDB_ENDPOINT=http://dynamodb:8000
+      - CORS_ORIGINS=["http://localhost:3000"]
+    ports:
+      - "8001:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      dynamodb:
+        condition: service_started
+
+  chat-worker:
+    build:
+      context: ../../services/chat-worker
+    environment:
+      - APP_ENV=local
+      - LOG_LEVEL=DEBUG
+      - REDIS_URL=redis://redis:6379/0
+      - DDB_ENDPOINT=http://dynamodb:8000
+    depends_on:
+      redis:
+        condition: service_healthy
+      dynamodb:
+        condition: service_started
+
+  web:
+    build:
+      context: ../../apps/web
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8001
+    ports:
+      - "3000:3000"
+    depends_on:
+      - chat-api

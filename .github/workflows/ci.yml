@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Python services (chat-api, chat-worker)
+  # ---------------------------------------------------------------------------
+  python:
+    name: "Python — ${{ matrix.service }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [services/chat-api, services/chat-worker]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.service }}
+        run: uv sync
+
+      - name: Lint
+        working-directory: ${{ matrix.service }}
+        run: uv run ruff check .
+
+      - name: Format check
+        working-directory: ${{ matrix.service }}
+        run: uv run ruff format --check .
+
+      - name: Type check
+        working-directory: ${{ matrix.service }}
+        run: uv run mypy .
+
+      - name: Tests
+        working-directory: ${{ matrix.service }}
+        run: uv run pytest -q --disable-warnings --cov=src --cov-report=term-missing
+
+  # ---------------------------------------------------------------------------
+  # Next.js web app
+  # ---------------------------------------------------------------------------
+  web:
+    name: "Web — Next.js"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:run
+      - run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # Terraform validation
+  # ---------------------------------------------------------------------------
+  terraform:
+    name: "Terraform — fmt & validate"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Format check
+        run: terraform fmt -check -recursive infra/terraform
+
+      - name: Validate (dev)
+        working-directory: infra/terraform/live/dev
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+  # ---------------------------------------------------------------------------
+  # Docker image builds
+  # ---------------------------------------------------------------------------
+  docker-build:
+    name: "Docker — build images"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build chat-api
+        run: docker build -t chat-api:ci services/chat-api
+
+      - name: Build chat-worker
+        run: docker build -t chat-worker:ci services/chat-worker
+
+      - name: Build web
+        run: docker build -t web:ci apps/web
